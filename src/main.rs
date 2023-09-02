@@ -68,7 +68,7 @@ fn main() {
         if children != "" {
             for child in children_list {
                 let child_sched = fs::read_to_string(format!("/proc/{child}/schedstat"));
-                if(child_sched.is_ok()) {
+                if child_sched.is_ok() {
                     let child_cputime = child_sched.unwrap().trim().split_whitespace().next().unwrap().parse::<u64>().unwrap();
                     child_stats_dict.insert(child.to_owned(), child_cputime);
                 }
@@ -77,7 +77,7 @@ fn main() {
 
         let mut cputime = sched.unwrap_or("0".to_string()).trim().split_whitespace().next().unwrap().parse::<u64>().unwrap();
 
-        for (k, v) in &child_stats_dict {
+        for (_, v) in &child_stats_dict {
             cputime += v;
         }
 
@@ -105,10 +105,10 @@ fn main() {
             Err(_) => { }
         }
 
-        thread::sleep_ms(args.period);
+        thread::sleep(Duration::from_millis(args.period.into()));
     }
 
-    target.wait();
+    let _ = target.wait();
 
     println!("Post-processing...");
     println!("Total datapoints collected: {}", results.len());
@@ -129,16 +129,16 @@ fn main() {
     let mut energy_gpu_total: f64 = 0.0;
     let mut energy_cpu_share: f64 = 0.0;
 
-    for i in (start_index .. end_index) {
+    for i in start_index .. end_index {
         let sched_start = results[i-1].sched;
         let sched_end = results[i].sched;
 
-        if(sched_start == 0) {
+        if sched_start == 0 {
             println!("Err at Datapoint {}", sched_start);
             continue;
         }
 
-        if(sched_end == 0) {
+        if sched_end == 0 {
             println!("Err at Datapoint {}", sched_end);
             continue;
         }
