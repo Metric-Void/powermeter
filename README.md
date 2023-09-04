@@ -8,7 +8,14 @@ After installing the Rust compiler, run
 cargo build
 ```
 
+or, if you want to build a release variant
+
+```
+cargo build --profile=release
+```
+
 ## Using
+
 ```
 Usage: jetson-meter [OPTIONS] [PROGRAM]
 
@@ -23,6 +30,10 @@ Options:
 ```
 
 The `[PROGRAM]` argument can be any bash script, including output redirect directives ( `>1`, etc.) Quote the script.
+
+## Setting the period
+The sampling period defaults to 50ms, which seems to work good under the debug profile. However, in the release profile the loop seems to complete much faster, which means more overhead.  
+Use a longer sampling period if the program is built with the release profile.
 
 ## Examples
 The program needs superuser to access some counters.
