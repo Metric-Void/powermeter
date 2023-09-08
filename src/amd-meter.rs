@@ -1,3 +1,5 @@
+mod amd;
+
 extern crate num_cpus;
 use clap::Parser;
 use std::process::Command;
@@ -25,21 +27,29 @@ struct Args {
 
 struct CollectedPoint {
     time: Instant,
-    power0: u64,
-    power1: u64,
-    power2: u64,
+    package: f64,
+    cpu_power: f64,
     sched: u64
 }
 
 fn main() {
-    let ncpus = num_cpus::get();
-
     let args = Args::parse();
+    let ncpus = num_cpus::get();
     let program = args.program.expect("Specify the program you want to run.");
+
+    let ctx_result = amd::AmdCpuContext::new();
+
+    if ctx_result.is_err() {
+        eprintln!("Unable to establish CPU context. Are you root?");
+        eprintln!("{:#?}", ctx_result.unwrap_err());
+        std::process::exit(1);
+    }
+
+    let ctx = ctx_result.unwrap();
 
     println!("{:?}", program);
 
-    println!("{ncpus} CPUs detected, sampling interval is {} ms", args.period);
+    println!("{} Physical CPUs detected, sampling interval is {} ms", ctx.get_cores(), args.period);
 
     let mut results = Vec::<CollectedPoint>::new();
     let target_spawn = Command::new("sh")
@@ -52,11 +62,13 @@ fn main() {
     println!("Started process {}", target.id());
 
     let mut child_stats_dict = HashMap::<String, u64>::new();
+    let mut cpu_energy_last = ctx.all_core_energy().unwrap();
+    let mut package_energy_last: f64 = ctx.read_package_energy().unwrap();
 
     loop {
-        let power0: u64;
-        let power1: u64;
-        let power2: u64;
+        /*
+            CPU Time slicing
+         */
 
         let sched = fs::read_to_string(format!("/proc/{target_pid}/schedstat"));
         
@@ -81,15 +93,35 @@ fn main() {
             cputime += v;
         }
 
-        power0 = fs::read_to_string("/sys/bus/i2c/drivers/ina3221x/6-0040/iio:device0/in_power0_input").expect("Failed to read Power 0 (System Power).").trim().parse::<u64>().unwrap();
-        power1 = fs::read_to_string("/sys/bus/i2c/drivers/ina3221x/6-0040/iio:device0/in_power1_input").expect("Failed to read Power 1 (GPU Power).").trim().parse::<u64>().unwrap();
-        power2 = fs::read_to_string("/sys/bus/i2c/drivers/ina3221x/6-0040/iio:device0/in_power2_input").expect("Failed to read Power 2 (CPU Power).").trim().parse::<u64>().unwrap();
-        
+        /*
+            Power reading
+         */
+
+        let cpu_energy_r = ctx.all_core_energy();
+        if cpu_energy_r.is_err() {
+            eprintln!("Read MSR Error: Cannot read core energy.");
+            std::process::exit(1);
+        }
+        let cpu_energy = cpu_energy_r.unwrap();
+
+        let cpu_energy_delta: Vec<f64> = cpu_energy.clone().into_iter().zip(&cpu_energy_last).zip(0..ctx.get_cores()).map(|((a, b), c)| ctx.rollover(c, a - b)).collect();
+
+        let cpu_energy_delta_sum: f64 = cpu_energy_delta.into_iter().sum();
+
+        let pkg_energy_r = ctx.read_package_energy();
+        if pkg_energy_r.is_err() {
+            eprintln!("Read MSR Error: Cannot read package energy.");
+            std::process::exit(1);
+        }
+
+        let pkg_energy = pkg_energy_r.unwrap();
+        let pkg_energy_delta = ctx.rollover(0, pkg_energy - package_energy_last);
+
+
         let data = CollectedPoint {
             time : Instant::now(),
-            power0 : power0,
-            power1 : power1,
-            power2 : power2,
+            package : pkg_energy_delta,
+            cpu_power : cpu_energy_delta_sum,
             sched : cputime
         };
 
@@ -99,11 +131,12 @@ fn main() {
                 println!("Target process has exited with {status}");
                 break;
             }
-            Ok(None) => {
-
-            }
+            Ok(None) => { }
             Err(_) => { }
         }
+
+        cpu_energy_last = cpu_energy;
+        package_energy_last = pkg_energy;
 
         thread::sleep(Duration::from_millis(args.period.into()));
     }
@@ -114,7 +147,7 @@ fn main() {
     println!("Total datapoints collected: {}", results.len());
 
     if results.len() <= 3 {
-        println!("Too little datapoints. Consider a longer-running program or reducing the sampling interval.");
+        println!("Too few datapoints. Consider a longer-running program or reducing the sampling interval.");
         std::process::exit(1);
     }
 
@@ -124,9 +157,8 @@ fn main() {
     let end_index: usize = (results.len() as f64 - (results.len() as f64) * args.end_ignore).floor() as usize;
 
     // Units in mJ
-    let mut energy_system_total: f64 = 0.0;
+    let mut energy_package_total: f64 = 0.0;
     let mut energy_cpu_total: f64 = 0.0;
-    let mut energy_gpu_total: f64 = 0.0;
     let mut energy_cpu_share: f64 = 0.0;
 
     for i in start_index .. end_index {
@@ -149,10 +181,9 @@ fn main() {
 
         // println!("During DP#{i}, time progressed {dur} and process used {sched_time} CPU time. System power is {} mW", results[i].power0);
 
-        energy_system_total += results[i].power0 as f64 * (dur as f64 / 1000000000.0);
-        energy_gpu_total += results[i].power1 as f64 * (dur as f64 / 1000000000.0);
-        energy_cpu_total += results[i].power2 as f64 * (dur as f64 / 1000000000.0);
-        energy_cpu_share += results[i].power2 as f64 * (dur as f64 / 1000000000.0) * (sched_time as f64 / (ncpus as f64 * dur as f64));
+        energy_package_total += results[i].package as f64;
+        energy_cpu_total += results[i].cpu_power as f64;
+        energy_cpu_share += results[i].cpu_power as f64 * (sched_time as f64 / (ncpus as f64 * dur as f64));
 
         // println!("{}", results[i-1].sched);
         // println!("{}", results[i].sched);
@@ -161,14 +192,12 @@ fn main() {
     let time_ns = (results[end_index].time - results[start_index].time).as_nanos();
 
     println!("");
-    println!("During {time_ns} ns of running: ");
-    println!("    {energy_system_total} mJ energy is consumed.");
-    println!("    {energy_cpu_total} mJ energy is consumed by the CPU.");
-    println!("        {energy_cpu_share} mJ energy can be attributed to the target.");
-    println!("    {energy_gpu_total} mJ is consumed by the GPU.");
+    println!("During {time_ns} ns ({}s) of running: ", time_ns as f64 / 1000000000.0);
+    println!("    {energy_package_total} J package energy is consumed.");
+    println!("    {energy_cpu_total} J energy is consumed by the CPU.");
+    println!("        {energy_cpu_share} J energy can be attributed to the target.");
     println!("");
-    println!("System Power is {} W", energy_system_total as f64 / time_ns as f64 * 1000000.0);
-    println!("CPU Power is {} W", energy_cpu_total as f64 / time_ns as f64 * 1000000.0);
-    println!("  Process CPU Power is {} W", energy_cpu_share as f64 / time_ns as f64 * 1000000.0);
-    println!("GPU Power is {} W", energy_gpu_total as f64 / time_ns as f64 * 1000000.0);
+    println!("System Power is {} W", energy_package_total as f64 / time_ns as f64 * 1000000000.0);
+    println!("CPU Power is {} W", energy_cpu_total as f64 / time_ns as f64 * 1000000000.0);
+    println!("  Process CPU Power is {} W", energy_cpu_share as f64 / time_ns as f64 * 1000000000.0);
 }

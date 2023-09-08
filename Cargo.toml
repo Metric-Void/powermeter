@@ -8,4 +8,7 @@ edition = "2021"
 [dependencies]
 clap = { version = "4.4.2", features = ["derive"] }
 num_cpus = "1.0"
-periodic = "0.1.1"
+
+[[bin]]
+name = "amd-meter"
+path = "src/amd-meter.rs"
