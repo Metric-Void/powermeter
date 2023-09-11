@@ -11,4 +11,8 @@ num_cpus = "1.0"
 
 [[bin]]
 name = "amd-meter"
-path = "src/amd-meter.rs"
+path = "src/amd/amd-meter.rs"
+
+[[bin]]
+name = "intel-meter"
+path = "src/intel/intel-meter.rs"

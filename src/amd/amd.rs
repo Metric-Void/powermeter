@@ -1,4 +1,5 @@
 use std::{fs::File, os::unix::prelude::FileExt, usize};
+
 extern crate num_cpus;
 
 const AMD_MSR_PWR_UNIT:         u64 = 0xC0010299;
